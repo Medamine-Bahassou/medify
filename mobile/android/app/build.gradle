@@ -1,0 +1,75 @@
+apply plugin: 'com.android.application'
+apply plugin: 'org.jetbrains.kotlin.android'
+apply plugin: 'org.jetbrains.kotlin.plugin.compose'
+
+// One version for the whole app: mobile/package.json (1.3.0 becomes versionCode 10300).
+def appVersion = new groovy.json.JsonSlurper().parse(file('../../package.json')).version
+def versionParts = appVersion.tokenize('.').collect { it.find(/\d+/).toInteger() }
+
+// Release signing, kept out of the repository: android/keystore.properties locally, environment variables in CI.
+// Without either, the release APK is built unsigned.
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file('keystore.properties')
+if (keystoreFile.exists()) keystoreFile.withInputStream { keystoreProps.load(it) }
+def signingValue = { String prop, String env -> keystoreProps.getProperty(prop) ?: System.getenv(env) }
+def releaseStore = signingValue('storeFile', 'MUSIKE_KEYSTORE')
+
+android {
+    namespace = "app.musike.android"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "app.musike.android"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode versionParts[0] * 10000 + versionParts[1] * 100 + versionParts[2]
+        versionName appVersion
+    }
+    buildFeatures { compose = true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    testOptions { unitTests.returnDefaultValues = true } // the live test runs app code on the JVM
+    signingConfigs {
+        if (releaseStore) {
+            release {
+                storeFile rootProject.file(releaseStore)
+                storePassword signingValue('storePassword', 'MUSIKE_KEYSTORE_PASSWORD')
+                keyAlias signingValue('keyAlias', 'MUSIKE_KEY_ALIAS')
+                keyPassword signingValue('keyPassword', 'MUSIKE_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // without the release key (a local build), the debug key: the APK installs, and over a debug build
+            signingConfig releaseStore ? signingConfigs.release : signingConfigs.debug
+            // R8 shrinks and optimizes the code: Compose runs much faster this way, most of all on older phones
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+}
+
+// The app is native (Kotlin + Jetpack Compose, Material 3): screens through Compose, playback through Media3 (ExoPlayer and its
+// media session: notification, lock screen, headphone buttons), YouTube's API through OkHttp, artwork through Coil.
+dependencies {
+    implementation platform("androidx.compose:compose-bom:2025.10.01")
+    implementation "androidx.compose.material3:material3"
+    implementation "androidx.compose.material:material-icons-core"
+    implementation "androidx.compose.ui:ui"
+    implementation "androidx.activity:activity-compose:1.11.0"
+    implementation "androidx.media3:media3-exoplayer:1.8.0"
+    implementation "androidx.media3:media3-session:1.8.0"
+    implementation "io.coil-kt.coil3:coil-compose:3.3.0"
+    implementation "io.coil-kt.coil3:coil-network-okhttp:3.3.0"
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    // liquid glass for the chrome that floats over content (dock, mini player, headers, player controls): Kyant's
+    // Backdrop (Apache-2.0), the library LastWave's glass is built on. 1.x: 2.x needs compile SDK 37 and AGP 9
+    implementation "io.github.kyant0:backdrop:1.0.6"
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.json:json:20250517" // Android's org.json is a stub in JVM tests
+}
+
+kotlin { jvmToolchain(21) }
